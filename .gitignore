@@ -1,0 +1,15 @@
+# Data & Personal Info
+data/
+drafts/
+resume/
+applications/
+*.pdf
+*.docx
+
+# Environment
+.env
+__pycache__/
+*.pyc
+
+# System
+.DS_Store
