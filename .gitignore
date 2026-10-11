@@ -1,5 +1,11 @@
 # Data & Personal Info
+profile/
 data/
+outbox/
+journal/
+notes/
+b2b/
+*.db
 drafts/
 resume/
 applications/

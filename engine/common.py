@@ -1,4 +1,4 @@
-"""Shared pieces: settings, the ledger file, and WhatsApp notification."""
+"""Shared pieces: settings, the ledger file, and chat notification."""
 import json
 import os
 import subprocess
@@ -9,6 +9,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get('CAREER_ENGINE_DATA', BASE_DIR / 'data'))
 LEDGER_FILE = DATA_DIR / 'career_ledger.json'
+DB_FILE = DATA_DIR / 'careers.db'
 
 
 def load_env(path=BASE_DIR / '.env'):
@@ -53,16 +54,17 @@ def save_ledger(ledger):
 
 
 def notify(message, dry_run=False):
-    """Send a WhatsApp message through OpenClaw. Returns True if it was sent."""
+    """Send a chat message through OpenClaw (channel NOTIFY_CHANNEL, default whatsapp). Returns True if it was sent."""
     if dry_run:
         print('[dry run] would send:\n' + message + '\n')
         return False
-    target = os.environ.get('TARGET_PHONE_NUMBER', '')
+    channel = os.environ.get('NOTIFY_CHANNEL', 'whatsapp')
+    target = os.environ.get('NOTIFY_TARGET') or os.environ.get('TARGET_PHONE_NUMBER', '')
     if not target or set(target) <= set('+0'):
-        sys.exit('Set TARGET_PHONE_NUMBER in .env before sending messages.')
+        sys.exit('Set NOTIFY_TARGET (or TARGET_PHONE_NUMBER) in .env before sending messages.')
     done = subprocess.run(
-        ['openclaw', 'message', 'send', '--channel', 'whatsapp', '--target', target, '--message', message],
+        ['openclaw', 'message', 'send', '--channel', channel, '--target', target, '--message', message],
         capture_output=True, text=True, timeout=60)
     if done.returncode != 0:
-        print(f'WhatsApp send failed: {done.stderr.strip()[:200]}', file=sys.stderr)
+        print(f'Message send failed: {done.stderr.strip()[:200]}', file=sys.stderr)
     return done.returncode == 0
