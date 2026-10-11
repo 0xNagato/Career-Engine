@@ -46,7 +46,7 @@ def run(db, sources, only=None, ignore_due=False):
 def main(argv=None):
     args = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     args.add_argument('--no-score', action='store_true')
-    args.add_argument('--dry-run', action='store_true', help='use a temporary database and ignore the fetch schedule')
+    args.add_argument('--dry-run', action='store_true', help='fetch into a temporary database, ignore the schedule, score nothing')
     args.add_argument('--limit', type=int, default=None, help='most jobs to score in this run')
     args.add_argument('--only', help='one source name')
     options = args.parse_args(argv)
@@ -58,8 +58,9 @@ def main(argv=None):
     for name, r in table.items():
         print(f'{name:<16}{r[0]:>8}{r[1]:>7}{r[2]:>5}{r[3]:>5}{r[4]:>5}  {r[5]}')
     totals = [sum(r[i] for r in table.values()) for i in range(5)]
-    limit = options.limit if options.limit is not None else (5 if options.dry_run else None)  # a dry run never scores many
-    scored = 0 if options.no_score else score.score_pending(db, score.load_profile(), limit)
+    # Scoring only ever runs on the real database, because that is where the day's model calls are counted.
+    scoring = not (options.no_score or options.dry_run)
+    scored = score.score_pending(db, score.load_profile(), options.limit) if scoring else 0
     print(f"{'total':<16}{totals[0]:>8}{totals[1]:>7}{totals[2]:>5}{totals[3]:>5}{totals[4]:>5}  scored {scored}")
     if path:
         print(f'database: {path}')

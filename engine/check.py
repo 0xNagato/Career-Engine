@@ -208,11 +208,35 @@ def junk_for_flood(prompt):  # only the flooded source's posts get junk; the con
 
 
 cdb, calls = cap_db('hostile.db'), []
-assert score.score_pending(cdb, 'p', None, junk_for_flood) == 2 and len(calls) == 6, 'junk posts cost their source, the quiet source is fully scored'
-assert states_of(cdb).count('failed') == 0 and store.attempts_today(cdb, 'flood') == 4, 'one strike each so far, and control calls are charged to the flooded source'
+assert score.score_pending(cdb, 'p', None, junk_for_flood) == 2 and len(calls) == 5, 'junk posts cost their source, the quiet source is fully scored'
+assert states_of(cdb).count('failed') == 0 and store.attempts_today(cdb, 'flood') == 3, 'control calls are charged to the flooded source, which never exceeds its share'
 os.environ['SCORE_CAP'] = '30'  # a later day with more budget: the same two posts fail again
 score.score_pending(cdb, 'p', None, junk_for_flood)
-assert states_of(cdb).count('failed') >= 2, 'two strikes with a healthy pipe drop a post'
+assert states_of(cdb).count('failed') >= 1, 'two strikes with a healthy pipe drop a post'
+
+
+def junk_for_all_posts(prompt):  # every post gets junk, the control post is fine: each job costs two calls
+    calls.append(1)
+    return GOOD if 'Example Ltd' in prompt else 'not json'
+
+
+for cap_value, expected_total in (('9', None), ('5', 5)):  # the cap, the share and nothing else is ever exceeded
+    os.environ['SCORE_CAP'] = cap_value
+    cdb, calls = cap_db(f'exact{cap_value}.db'), []
+    score.score_pending(cdb, 'p', None, junk_for_all_posts)
+    cap, share = score.daily_cap(), (int(cap_value) if int(cap_value) < 6 else int(cap_value) // 3)
+    assert store.attempts_today(cdb) == len(calls) <= cap, (cap_value, len(calls))
+    assert max(store.attempts_today(cdb, 'flood'), store.attempts_today(cdb, 'quiet')) <= share, cap_value
+    assert expected_total is None or len(calls) == expected_total, (cap_value, len(calls))
+
+for asked, got in (('100000', score.HARD_CAP), ('abc', 40), ('-5', 0), ('12', 12)):
+    os.environ['SCORE_CAP'] = asked
+    assert score.daily_cap() == got, f'SCORE_CAP={asked}'
+
+os.environ['SCORE_CAP'] = '9'
+cdb, calls = cap_db('locked.db'), []
+with score.scoring_lock() as held:
+    assert held and score.score_pending(cdb, 'p', None, lambda p: calls.append(1) or GOOD) == 0 and not calls, 'a second scoring run does nothing'
 os.environ['SCORE_CAP'] = '9'
 
 

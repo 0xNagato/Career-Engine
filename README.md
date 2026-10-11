@@ -10,7 +10,7 @@ Intake has no tools: it fetches public pages, parses them in plain code and make
 
 | Command | What it does |
 |---|---|
-| `python3 engine/intake.py [--no-score] [--dry-run] [--limit N] [--only source]` | Fetches each source that is due, stores new jobs, applies the eligibility and relevance rules, then scores until `--limit` or the daily cap. `--dry-run` uses a temporary database (its path is printed) and ignores the fetch schedule. |
+| `python3 engine/intake.py [--no-score] [--dry-run] [--limit N] [--only source]` | Fetches each source that is due, stores new jobs, applies the eligibility and relevance rules, then scores until `--limit` or the daily cap. `--dry-run` uses a temporary database (its path is printed) and ignores the fetch schedule. `--dry-run` fetches into a temporary database and scores nothing, because model calls are only counted on the real one. At most `SCORE_CAP` model calls are made a day (default 40, never more than 60), one source may use a third of them, and only one scoring run happens at a time. |
 | `python3 engine/digest.py [--send] [--top N] [--db PATH]` | Prints the top scored jobs not yet shown (score 70 or more, eligible). `--send` sends it and marks the jobs shown. |
 | `python3 engine/decide.py apply 412` / `skip 412 "too junior"` / `more 412` | Records my decision. Recent skip reasons are shown to the model when it scores later jobs. |
 | `python3 engine/check_job_response.py [--dry-run]` | Searches the mailbox for replies from companies in the JSON ledger (`data/career_ledger.json`). |

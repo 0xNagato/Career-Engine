@@ -1,4 +1,6 @@
 """Ask the model how well a job fits the profile. At most SCORE_CAP model calls a day, failed ones included."""
+import contextlib
+import fcntl
 import json
 import os
 import sys
@@ -61,6 +63,30 @@ def score_job(db, job, profile, run=run_model):
     return verdict
 
 
+HARD_CAP = 60  # ceiling in code: SCORE_CAP in the environment can lower the daily cap, never raise it past this
+
+
+def daily_cap():
+    try:
+        asked = int(os.environ.get('SCORE_CAP', '40'))
+    except ValueError:
+        asked = 40
+    return max(0, min(asked, HARD_CAP))
+
+
+@contextlib.contextmanager
+def scoring_lock():
+    """One scoring run at a time, so two runs cannot both spend the same remaining budget. Yields False if taken."""
+    common.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(common.DATA_DIR / 'score.lock', 'w') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+
+
 CONTROL = {'title': 'Software Engineer', 'company': 'Example Ltd', 'location': 'Worldwide', 'regions': ['worldwide'],
            'remote': True, 'employment': 'full_time', 'salary': '', 'tags': [],
            'description': 'Build and maintain web services with a small remote team.'}
@@ -91,43 +117,57 @@ def queue(db):
 def score_pending(db, profile, limit=None, run=run_model):
     """Score unscored jobs. Returns how many were scored.
 
-    Every model call counts against the daily cap, failed and control calls included, and one source may
-    use at most a third of it.
+    Every model call is checked against three limits before it is made, control calls included: the daily
+    cap, this run's limit, and the source's share (one source may use at most a third of the cap).
 
     When a reply is not a verdict, a control question about a known-harmless post decides whose fault it is.
     Control fails: the pipe is at fault, the run stops, and no job is penalised. Control passes: the post is
-    at fault and gets a strike; two strikes drop it. A model that cannot be reached stops the run after three
-    in a row. No job is tried more than three times."""
-    cap = max(0, int(os.environ.get('SCORE_CAP', '40')))
+    at fault and gets a strike; two strikes drop it. With no budget left for the control, the reply is left
+    undecided. A model that cannot be reached stops the run after three in a row. No job is tried more than
+    three times."""
+    cap = daily_cap()
     share = cap if cap < 6 else cap // 3
     done = tried = unreachable = 0
-    for job_id, source in queue(db):
-        if store.attempts_today(db) >= cap or (limit is not None and tried >= limit) or unreachable >= 3:
-            break
-        if store.attempts_today(db, source) >= share:
-            continue
-        attempt = store.log_attempt(db, job_id)
-        tried += 1
-        try:
-            score_job(db, store.get_job(db, job_id), profile, run)
-            store.set_outcome(db, attempt, 'ok')
-            done += 1
-            unreachable = 0
-            continue
-        except BadReply as e:
-            store.log_attempt(db, job_id, 'control')  # the control call is charged to the same source
-            tried += 1
-            if not pipe_works(profile, store.recent_skips(db, 5), run):
-                store.set_outcome(db, attempt, 'pipe')
-                print('scoring stopped: the model gives no verdict even for a known-harmless post', file=sys.stderr)
+
+    def room(source=None):
+        """May one more model call be made: for the day, for this run, and (if given) for this source?"""
+        return (store.attempts_today(db) < cap and (limit is None or tried < limit)
+                and (source is None or store.attempts_today(db, source) < share))
+
+    with scoring_lock() as held:
+        if not held:
+            print('another run is scoring; skipped', file=sys.stderr)
+            return 0
+        for job_id, source in queue(db):
+            if not room() or unreachable >= 3:
                 break
-            store.set_outcome(db, attempt, 'bad')
-            unreachable = 0
-            print(f'no verdict for job {job_id}: {clean(e, 120)}', file=sys.stderr)
-        except Exception as e:  # timeout, non-zero exit, or a reply that did not come from the local transport
-            store.set_outcome(db, attempt, 'pipe')
-            unreachable += 1
-            print(f'could not score job {job_id}: {clean(e, 120)}', file=sys.stderr)
-        if store.attempts_for(db, job_id, 'bad') >= 2 or store.attempts_for(db, job_id) >= 3:
-            store.set_state(db, job_id, 'failed')
+            if not room(source):
+                continue
+            attempt = store.log_attempt(db, job_id)
+            tried += 1
+            try:
+                score_job(db, store.get_job(db, job_id), profile, run)
+                store.set_outcome(db, attempt, 'ok')
+                done += 1
+                unreachable = 0
+                continue
+            except BadReply as e:
+                if not room(source):  # no budget for the control question: undecided, so no strike
+                    store.set_outcome(db, attempt, 'pipe')
+                else:
+                    store.log_attempt(db, job_id, 'control')  # charged to the same source
+                    tried += 1
+                    if not pipe_works(profile, store.recent_skips(db, 5), run):
+                        store.set_outcome(db, attempt, 'pipe')
+                        print('scoring stopped: the model gives no verdict even for a known-harmless post', file=sys.stderr)
+                        break
+                    store.set_outcome(db, attempt, 'bad')
+                    unreachable = 0
+                    print(f'no verdict for job {job_id}: {clean(e, 120)}', file=sys.stderr)
+            except Exception as e:  # timeout, non-zero exit, or a reply that did not come from the local transport
+                store.set_outcome(db, attempt, 'pipe')
+                unreachable += 1
+                print(f'could not score job {job_id}: {clean(e, 120)}', file=sys.stderr)
+            if store.attempts_for(db, job_id, 'bad') >= 2 or store.attempts_for(db, job_id) >= 3:
+                store.set_state(db, job_id, 'failed')
     return done
