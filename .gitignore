@@ -8,6 +8,7 @@ applications/
 
 # Environment
 .env
+profile.md
 __pycache__/
 *.pyc
 

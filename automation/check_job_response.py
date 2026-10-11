@@ -1,101 +1,77 @@
-import subprocess
+"""Look for email from companies in the ledger and announce replies not seen before.
+
+Run:  python3 automation/check_job_response.py [--dry-run]
+Needs himalaya 2.x with a configured mail account.
+"""
+import argparse
 import json
-import os
+import subprocess
 from datetime import datetime
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+from common import load_env, load_ledger, notify, save_ledger
 
-# Configuration
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LEDGER_FILE = os.path.join(BASE_DIR, 'data', 'career_ledger.json')
-TARGET_NUMBER = os.getenv('TARGET_PHONE_NUMBER', '+00000000000')
-LAST_ID_FILE = os.path.join(BASE_DIR, 'data', 'last_email_id.json')
+TOO_GENERIC = {'unknown', 'confidential', 'n/a', 'none'}
 
-def load_ledger():
-    if os.path.exists(LEDGER_FILE):
-        try:
-            with open(LEDGER_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return None
-    return None
 
-def save_ledger(ledger):
-    with open(LEDGER_FILE, 'w') as f:
-        json.dump(ledger, f, indent=4)
+def company_names(ledger):
+    names = {entry.get('company', '').strip().lower() for entry in ledger['applications'] + ledger['leads']}
+    return sorted(n for n in names - TOO_GENERIC if len(n) >= 3)
 
-def check_for_responses():
-    ledger = load_ledger()
-    if not ledger:
-        return
 
-    # Track every company we've ever lead or applied to
-    trackable_names = set()
-    for app in ledger.get('applications', []):
-        trackable_names.add(app['company'].lower())
-    for lead in ledger.get('leads', []):
-        trackable_names.add(lead['company'].lower())
-    
-    if not trackable_names:
-        return
+def search_query(names):
+    """himalaya search query: sender or subject mentions a company. Quoted so names with spaces survive."""
+    def quote(name):
+        return '"' + name.replace('"', '') + '"'
+    return ' or '.join(f'from {quote(n)} or subject {quote(n)}' for n in names)
 
-    # Dynamic search for any of these names in from/subject
-    query_parts = [f"subject {name} or from {name}" for name in trackable_names]
-    search_query = " or ".join(query_parts)
 
+def find_emails(names):
+    done = subprocess.run(['himalaya', '--json', 'envelope', 'search', '--page-size', '50', search_query(names)],
+                          capture_output=True, text=True, timeout=120)
     try:
-        # Search the last 20 emails
-        cmd = ['himalaya', '--output', 'json', 'envelope', 'list', search_query, '--page-size', '20']
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            return
+        data = json.loads(done.stdout)
+    except json.JSONDecodeError:
+        data = {'error': done.stderr.strip()[:200] or 'himalaya printed no JSON'}
+    if done.returncode != 0 or 'error' in data:  # himalaya reports some errors with exit code 0
+        raise RuntimeError(f"himalaya: {data.get('error')}")
+    return data.get('envelopes', [])
 
-        output = result.stdout.strip()
-        json_start = output.find('[')
-        if json_start == -1:
-            return
-            
-        emails = json.loads(output[json_start:])
-        if not emails:
-            return
 
-        # State tracking for emails already processed
-        last_id = None
-        if os.path.exists(LAST_ID_FILE):
-            with open(LAST_ID_FILE, 'r') as f:
-                last_id = json.load(f).get('id')
+def sender(envelope):
+    people = envelope.get('from') or []
+    return ', '.join(f"{p.get('name') or ''} <{p.get('email', '')}>".strip() for p in people) or 'unknown sender'
 
-        # We only care about the most recent one if it's new
-        latest_email = emails[0]
-        latest_id = str(latest_email.get('id'))
 
-        if latest_id != last_id:
-            # Check if this response is already in our ledger to prevent duplicates
-            already_logged = any(r.get('id') == latest_id for r in ledger.get('responses', []))
-            
-            if not already_logged:
-                ledger['responses'].append({
-                    "id": latest_id,
-                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "from": latest_email.get('from'),
-                    "subject": latest_email.get('subject'),
-                    "body_preview": latest_email.get('body', '')[:200]
-                })
-                save_ledger(ledger)
-                
-                # Notify user immediately
-                msg = f"📩 🦞 Jarvis: ALERT! New response regarding your career search!\n\nFrom: {latest_email.get('from')}\nSubject: {latest_email.get('subject')}\n\nI have updated your Career Ledger and am standing by for your next command."
-                subprocess.run(['openclaw', 'message', 'send', '--channel', 'whatsapp', '--target', TARGET_NUMBER, '--message', msg])
-                
-                # Update high-water mark
-                with open(LAST_ID_FILE, 'w') as f:
-                    json.dump({'id': latest_id}, f)
+def check(dry_run=False, find=find_emails, notify=notify):
+    ledger = load_ledger()
+    names = company_names(ledger)
+    if not names:
+        print('No companies in the ledger yet.')
+        return 0
 
-    except Exception as e:
-        print(f"Monitor error: {e}")
+    logged = {str(r.get('id')) for r in ledger['responses']}
+    fresh = [e for e in find(names) if str(e['id']) not in logged]
+    for envelope in reversed(fresh):  # himalaya lists newest first; log oldest first
+        ledger['responses'].append({
+            'id': str(envelope['id']),
+            'date': envelope.get('date') or datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'from': sender(envelope),
+            'subject': envelope.get('subject', ''),
+        })
+    if fresh:
+        if not dry_run:
+            save_ledger(ledger)
+        lines = [f"{r['from']}: {r['subject']}" for r in ledger['responses'][-len(fresh):][-5:]]
+        more = f'\n(and {len(fresh) - 5} more in the ledger)' if len(fresh) > 5 else ''
+        notify(f'{len(fresh)} new email(s) about your job search\n\n' + '\n'.join(lines) + more, dry_run)
 
-if __name__ == "__main__":
-    check_for_responses()
+    print(f'{len(fresh)} new email(s) from {len(names)} tracked compan(ies).')
+    return len(fresh)
+
+
+if __name__ == '__main__':
+    args = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    args.add_argument('--dry-run', action='store_true', help='search and print, but write nothing and send nothing')
+    options = args.parse_args()
+    load_env()
+    check(dry_run=options.dry_run)
