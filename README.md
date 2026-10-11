@@ -54,7 +54,8 @@ This runs both scripts against made-up data, with no network, model or mailbox. 
 
 - **One job board, and a thin one.** Only LaraJobs is read, and its feed carries no job description. Each post is scored on its title, company, location, salary and tags.
 - **The model knows only your profile file.** It has no other context about you, so location and work-authorisation limits must be written in `profile.md`.
-- **Job posts are untrusted text.** A post is scored by a single model call (`openclaw infer model run`) that has no tools and no session, so a post that tries to give instructions can at worst earn a wrong score. The company name is taken from the feed, not from the model, and every piece of text is flattened to one capped line before it is stored or sent.
+- **Job posts are untrusted text.** A post is scored by a single model call, `openclaw infer model run --local`. In OpenClaw 2026.9.8 that path sends the model one prompt message with no tools and no session (checked in its source), and the script refuses a reply that came by any other path. A post that tries to give instructions can then at worst earn a wrong score. Re-check this after an OpenClaw upgrade.
+- **What reaches you is limited too.** The company name comes from the feed, not the model. Every piece of post text is flattened to one capped line with links removed, the only link sent is the checked `larajobs.com` one, and you answer an alert by its number (`apply 3`), which a post cannot forge.
 - **The ledger still holds text written by strangers.** Titles, company names and reasons come from job posts. Any agent that reads the ledger should treat them as data, not as instructions.
 - **Email matching is by company name** in the sender or subject, so a newsletter that mentions the company also counts.
 - **Nothing here applies for jobs.** The WhatsApp message offers to draft a cover letter; that step is done by the agent you reply to, not by this code.

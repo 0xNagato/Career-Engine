@@ -58,8 +58,11 @@ assert hunter.parse_verdict('```json\n' + GOOD + '\n```')['score'] == 91
 for bad in (GOOD + ' and more', GOOD + GOOD, 'Sure: ' + GOOD, '[1]', '{"eligible": "yes", "score": 50}',
             '{"eligible": true, "score": 150}', '{"eligible": true, "score": true}'):
     assert refused(lambda: hunter.parse_verdict(bad)), f'accepted {bad!r}'
-assert hunter.reply_text(json.dumps({'ok': True, 'outputs': [{'text': GOOD, 'mediaUrl': None}]})) == GOOD
-assert refused(lambda: hunter.reply_text(json.dumps({'ok': False, 'outputs': []})))
+RUN = {'ok': True, 'capability': 'model.run', 'transport': 'local', 'outputs': [{'text': GOOD, 'mediaUrl': None}]}
+assert hunter.reply_text(json.dumps(RUN)) == GOOD
+for change in ({'ok': False}, {'transport': 'gateway'}, {'capability': 'agent.run'}):
+    assert refused(lambda: hunter.reply_text(json.dumps({**RUN, **change}))), f'accepted a run with {change}'
+assert hunter.text_only('Apply at https://evil.example/x or WWW.evil.example now', 80) == 'Apply at [link removed] or [link removed] now'
 
 # --- The hunt: one match, announced once; a failed post is retried; the model cannot rename the company.
 sent, flaky = [], {'https://larajobs.com/job/3'}
@@ -80,6 +83,7 @@ def record(message, dry_run=False):
 assert hunter.hunt(fetch=lambda: iter(jobs), evaluate=fake_evaluate, notify=record) == 1
 lead = common.load_ledger()['leads'][0]
 assert lead['company'] == 'Acme Inc' and 'Evil' not in sent[0], 'company comes from the feed'
+assert lead['id'] == 1 and 'Reply "apply 1"' in sent[0], 'the alert is answered by number'
 assert '\n' not in lead['reason'] and len(lead['reason']) == 200
 assert len(lead['requirements']) == 8 and all(len(r) == 40 for r in lead['requirements'])
 assert common.read_json(hunter.STATE_FILE, {})['seen'] == ['https://larajobs.com/job/1'], 'a failed post is not marked handled'

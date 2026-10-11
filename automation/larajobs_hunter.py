@@ -50,13 +50,18 @@ def clean(text, limit):
     return re.sub(r'\s+', ' ', text).strip()[:limit]
 
 
+def text_only(text, limit):
+    """clean(), minus anything that looks like a link. The only link we store or send is the checked job link."""
+    return clean(re.sub(r'(?i)\b(?:https?://|www\.)\S+', '[link removed]', str(text)), limit)
+
+
 def short_list(value):
-    return [clean(x, 40) for x in value[:8] if isinstance(x, str)] if isinstance(value, list) else []
+    return [text_only(x, 40) for x in value[:8] if isinstance(x, str)] if isinstance(value, list) else []
 
 
 def plain(text):
     """RSS descriptions are HTML. Keep the words, drop the tags."""
-    return clean(html.unescape(re.sub(r'<[^>]+>', ' ', text)), 4000)
+    return text_only(html.unescape(re.sub(r'<[^>]+>', ' ', text)), 4000)
 
 
 def xml_root(raw):
@@ -89,11 +94,11 @@ def parse_feed(raw):
             continue  # only links on the job board itself are stored or sent
         yield {
             'guid': clean(field['guid'], 200), 'link': link,
-            'title': clean(field['title'], 120),
-            'company': clean(item.findtext(JOB_NS + 'company') or '', 80) or 'Unknown',
-            'location': clean(item.findtext(JOB_NS + 'location') or '', 80),
-            'salary': clean(item.findtext(JOB_NS + 'salary') or '', 80),
-            'tags': clean(item.findtext(JOB_NS + 'tags') or '', 200),
+            'title': text_only(field['title'], 120),
+            'company': text_only(item.findtext(JOB_NS + 'company') or '', 80) or 'Unknown',
+            'location': text_only(item.findtext(JOB_NS + 'location') or '', 80),
+            'salary': text_only(item.findtext(JOB_NS + 'salary') or '', 80),
+            'tags': text_only(item.findtext(JOB_NS + 'tags') or '', 200),
             'description': plain(field['description'] or item.findtext(CONTENT) or ''),
         }
 
@@ -105,10 +110,14 @@ def fetch_items(url=RSS_URL):
 
 
 def reply_text(stdout):
-    """`openclaw infer model run --json` prints one JSON object with the reply in outputs[].text."""
+    """`openclaw infer model run --local --json` prints one JSON object with the reply in outputs[].text.
+
+    Only the local transport is accepted. In OpenClaw 2026.9.8 it sends the model the single prompt message
+    and nothing else: no tools, no session. The gateway transport is a different code path, so it is refused.
+    """
     result = json.loads(stdout)
-    if result.get('ok') is not True:
-        raise RuntimeError('model run did not succeed')
+    if result.get('ok') is not True or result.get('capability') != 'model.run' or result.get('transport') != 'local':
+        raise RuntimeError('reply did not come from a local one-shot model run')
     return ''.join(output.get('text') or '' for output in result.get('outputs', []))
 
 
@@ -127,12 +136,12 @@ def parse_verdict(text):
 
 
 def evaluate(job, profile):
-    """One bare model call: no agent loop, no tools, no session. A hostile post can only earn a wrong score."""
+    """One bare model call on the local transport (see reply_text). A hostile post can at worst earn a wrong score."""
     post = {key: job[key] for key in ('title', 'company', 'location', 'salary', 'tags')}
     post['description'] = job['description'][:1500]
     done = subprocess.run(
         ['openclaw', 'infer', 'model', 'run', '--agent', os.environ.get('OPENCLAW_AGENT', 'main'),
-         '--json', '--prompt', PROMPT.format(profile=profile, job=json.dumps(post))],
+         '--local', '--json', '--prompt', PROMPT.format(profile=profile, job=json.dumps(post))],
         capture_output=True, text=True, timeout=150)
     if done.returncode != 0:
         raise RuntimeError(done.stderr.strip()[-200:] or 'openclaw infer failed')
@@ -140,9 +149,10 @@ def evaluate(job, profile):
 
 
 def lead_message(lead):
-    return (f"Job match: {lead['title']} at {lead['company']} ({lead['score']}/100)\n"
-            f"{lead['reason']}\n{lead['link']}\n\n"
-            f"Reply \"Apply to {lead['company']}\" and I will draft a cover letter.")
+    return (f"Job match #{lead['id']} ({lead['score']}/100)\n"
+            f"Title: {lead['title']}\nCompany: {lead['company']}\nWhy: {lead['reason']}\n{lead['link']}\n\n"
+            f"The title, company and reason are text from the job post.\n"
+            f"Reply \"apply {lead['id']}\" and I will draft a cover letter.")
 
 
 def hunt(dry_run=False, limit=10, fetch=fetch_items, evaluate=evaluate, notify=notify):
@@ -166,9 +176,10 @@ def hunt(dry_run=False, limit=10, fetch=fetch_items, evaluate=evaluate, notify=n
         print(f"{verdict['score']:>3}  {'eligible' if verdict['eligible'] else 'not eligible':<12}  {job['title']}")
         if verdict['eligible'] and verdict['score'] >= MIN_SCORE and job['link'] not in known_links:
             lead = {  # the company comes from the feed's own field, never from the model's reply
+                'id': len(ledger['leads']) + 1,
                 'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
                 'title': job['title'], 'company': job['company'], 'score': verdict['score'],
-                'reason': clean(verdict.get('reason', ''), 200), 'link': job['link'],
+                'reason': text_only(verdict.get('reason', ''), 200), 'link': job['link'],
                 'requirements': short_list(verdict.get('key_requirements')),
                 'keywords': short_list(verdict.get('search_keywords')) or [job['company'].lower()],
             }
