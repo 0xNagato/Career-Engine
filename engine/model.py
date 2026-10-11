@@ -8,6 +8,10 @@ VARIANTS = ('agent-systems', 'rust-backend', 'laravel-fullstack')
 FENCE = re.compile(r'^```(?:json)?\s*\n(.*)\n```$', re.S)
 
 
+class BadReply(ValueError):
+    """The model answered, but not with a valid verdict. The post's fault, not the pipe's."""
+
+
 def reply_text(stdout):
     """`openclaw infer model run --local --json` prints one JSON object with the reply in outputs[].text.
 
@@ -24,13 +28,16 @@ def parse_verdict(text):
     """The whole reply must be one JSON object, optionally inside a code fence. Anything else is rejected."""
     text = text.strip()
     fenced = FENCE.match(text)
-    verdict = json.loads(fenced.group(1) if fenced else text)  # raises on trailing text or a second object
+    try:
+        verdict = json.loads(fenced.group(1) if fenced else text)  # fails on trailing text or a second object
+    except ValueError:
+        raise BadReply('reply is not one JSON object')
     if not isinstance(verdict, dict):
-        raise ValueError('reply is not a JSON object')
+        raise BadReply('reply is not a JSON object')
     score = verdict.get('score')
     if (not isinstance(verdict.get('eligible'), bool) or type(score) is not int or not 0 <= score <= 100
             or not isinstance(verdict.get('reason', ''), str) or verdict.get('variant') not in VARIANTS):
-        raise ValueError('reply is not a valid verdict')
+        raise BadReply('reply is not a valid verdict')
     return verdict
 
 

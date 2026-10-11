@@ -5,6 +5,7 @@ Run:  python3 engine/check.py
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -174,11 +175,54 @@ assert store.scored_today(idb) == 2 and 'IGNORE' not in prompts[0] and 'untruste
 os.environ['SCORE_CAP'] = '10'
 assert score.score_pending(idb, 'profile', 1, fake_model) == 1, '--limit'
 assert score.score_pending(idb, 'profile', None, lambda p: 'not json') == 0 and store.scored_today(idb) == 3, 'a bad reply is skipped'
-calls, before = [], store.attempts_today(idb)
-assert score.score_pending(idb, 'profile', None, lambda p: calls.append(1) or 'not json') == 0 and len(calls) <= 3, 'three failures in a row stop the run'
-assert store.attempts_today(idb) == before + len(calls), 'failed calls count against the daily cap'
-if calls:
-    assert idb.execute("SELECT COUNT(*) FROM jobs WHERE state = 'failed'").fetchone()[0] >= 1, 'a job is given up on after two failures'
+
+# --- The cap protects the quota and cannot be turned against the owner.
+def cap_db(name, flood=6, quiet=2):
+    cdb = store.connect(tmp / name)
+    for n in range(flood):
+        store.set_state(cdb, store.add_job(cdb, job(300 + n, source='flood')), 'unscored')
+    for n in range(quiet):
+        store.set_state(cdb, store.add_job(cdb, job(400 + n, source='quiet')), 'unscored')
+    return cdb
+
+
+def states_of(cdb):
+    return [r[0] for r in cdb.execute('SELECT state FROM jobs ORDER BY id')]
+
+
+os.environ['SCORE_CAP'] = '9'  # so one source may use 3 calls
+cdb = cap_db('fair.db')
+assert {s for _, s in list(score.queue(cdb))[:2]} == {'flood', 'quiet'}, 'sources take turns'
+assert score.score_pending(cdb, 'p', None, lambda p: GOOD) == 5, 'a flooded source gets a third of the cap, the quiet one is fully scored'
+assert (store.attempts_today(cdb, 'flood'), store.attempts_today(cdb, 'quiet')) == (3, 2)
+
+cdb, calls = cap_db('junk.db'), []
+assert score.score_pending(cdb, 'p', None, lambda p: calls.append(1) or 'not json') == 0 and len(calls) == 5, 'junk replies do not stop the run'
+assert states_of(cdb).count('failed') == 5 and store.attempts_today(cdb) == 5, 'a junk reply drops that job at once and counts against the cap'
+assert score.score_pending(cdb, 'p', None, lambda p: calls.append(1) or GOOD) == 0 and len(calls) == 5, 'dropped jobs are not retried'
+
+
+def down(prompt):
+    calls.append(1)
+    raise RuntimeError('model unreachable')
+
+
+cdb, calls = cap_db('down.db'), []
+assert score.score_pending(cdb, 'p', None, down) == 0 and len(calls) == 3, 'three unreachable calls in a row stop the run'
+assert states_of(cdb).count('failed') == 0 and store.attempts_today(cdb) == 3, 'those jobs are kept for another try'
+
+# --- A database from another layout is refused, not half-used.
+old = tmp / 'old.db'
+legacy = sqlite3.connect(str(old))
+legacy.execute('CREATE TABLE jobs (id INTEGER PRIMARY KEY)')
+legacy.commit()
+legacy.close()
+try:
+    store.connect(old)
+    raise AssertionError('an old database layout must be refused')
+except SystemExit as e:
+    assert 'different version' in str(e)
+assert refused(lambda: store.set_state(cdb, 1, 'bogus')), 'only known states are stored'
 
 # --- Digest text: one link per job, nothing linkable in post-derived lines.
 ddb = store.connect(tmp / 'digest.db')

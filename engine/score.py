@@ -6,7 +6,7 @@ import sys
 import common
 import store
 from eligibility import check
-from model import VARIANTS, parse_verdict, run_model
+from model import VARIANTS, BadReply, parse_verdict, run_model
 from textsafe import chat_safe, clean
 
 PROFILE_DIR = common.BASE_DIR / 'profile'
@@ -59,25 +59,47 @@ def score_job(db, job, profile, run=run_model):
     return verdict
 
 
-def score_pending(db, profile, limit=None, run=run_model):
-    """Score unscored jobs, newest first. Returns how many were scored.
+def queue(db):
+    """Unscored jobs as (id, source): newest first within a source, sources taken in turn,
+    so a flood of posts on one board cannot push every other board out of the day's budget."""
+    by_source = {}
+    for row in db.execute("SELECT id, source FROM jobs WHERE state = 'unscored' ORDER BY id DESC").fetchall():
+        by_source.setdefault(row['source'], []).append(row['id'])
+    while by_source:
+        for source in list(by_source):
+            yield by_source[source].pop(0), source
+            if not by_source[source]:
+                del by_source[source]
 
-    Every model call counts against the daily cap, failed ones included. A run stops after three failures in a
-    row, and a job is given up on after two failed attempts, so a broken model path cannot burn the quota."""
+
+def score_pending(db, profile, limit=None, run=run_model):
+    """Score unscored jobs. Returns how many were scored.
+
+    Every model call counts against the daily cap, failed ones included, and one source may use at most a
+    third of it. A reply that is not a verdict is the post's fault: that job is dropped at once and the run
+    goes on. A model that cannot be reached is the pipe's fault: three in a row stop the run, and the job is
+    tried once more another day before it is dropped."""
     cap = max(0, int(os.environ.get('SCORE_CAP', '40')))
-    done = tried = streak = 0
-    for row in db.execute("SELECT id FROM jobs WHERE state = 'unscored' ORDER BY id DESC").fetchall():
-        if store.attempts_today(db) >= cap or (limit is not None and tried >= limit) or streak >= 3:
+    share = cap if cap < 6 else cap // 3
+    done = tried = unreachable = 0
+    for job_id, source in queue(db):
+        if store.attempts_today(db) >= cap or (limit is not None and tried >= limit) or unreachable >= 3:
             break
-        store.log_attempt(db, row['id'])
+        if store.attempts_today(db, source) >= share:
+            continue
+        store.log_attempt(db, job_id)
         tried += 1
         try:
-            score_job(db, store.get_job(db, row['id']), profile, run)
+            score_job(db, store.get_job(db, job_id), profile, run)
             done += 1
-            streak = 0
-        except Exception as e:  # one bad reply must not stop the run
-            streak += 1
-            if store.attempts_for(db, row['id']) >= 2:
-                store.set_state(db, row['id'], 'failed')
-            print(f"skipped job {row['id']}: {clean(e, 120)}", file=sys.stderr)
+            unreachable = 0
+        except BadReply as e:
+            unreachable = 0
+            store.set_state(db, job_id, 'failed')
+            print(f'dropped job {job_id}: {clean(e, 120)}', file=sys.stderr)
+        except Exception as e:  # timeout, non-zero exit, or a reply that did not come from the local transport
+            unreachable += 1
+            if store.attempts_for(db, job_id) >= 2:
+                store.set_state(db, job_id, 'failed')
+            print(f'could not score job {job_id}: {clean(e, 120)}', file=sys.stderr)
     return done

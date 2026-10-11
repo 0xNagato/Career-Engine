@@ -1,16 +1,20 @@
 """SQLite store in data/careers.db. Parameterised SQL only."""
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 
 import common
 from textsafe import chat_safe, clean, short_list
 
+VERSION = 2  # raise this whenever SCHEMA changes
+STATES = ('new', 'ineligible', 'unscored', 'scored', 'shown', 'failed')
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY, source TEXT, source_id TEXT, url TEXT UNIQUE, title TEXT, company TEXT, location TEXT,
   regions TEXT, remote INTEGER, employment TEXT, salary TEXT, tags TEXT, description TEXT, posted TEXT,
-  key TEXT, first_seen TEXT, state TEXT CHECK (state IN ('new','ineligible','unscored','scored','shown','failed')));
+  key TEXT, first_seen TEXT, state TEXT);
 CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key);
 CREATE TABLE IF NOT EXISTS verdicts (
   job_id INTEGER, eligible INTEGER, score INTEGER, reason TEXT, variant TEXT, requirements TEXT, at TEXT);
@@ -34,7 +38,14 @@ def connect(path=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(path))
     db.row_factory = sqlite3.Row
+    have = db.execute('PRAGMA user_version').fetchone()[0]
+    if have != VERSION and db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]:
+        # ponytail: refuse another layout rather than migrate it; write a migration once there is data worth keeping
+        sys.exit(f'{path} was made by a different version of the engine (layout {have}, this code needs {VERSION}). '
+                 'Move it aside and run again.')
     db.executescript(SCHEMA)
+    db.execute(f'PRAGMA user_version = {VERSION}')
+    db.commit()
     return db
 
 
@@ -67,6 +78,8 @@ def get_job(db, job_id):
 
 
 def set_state(db, job_id, state):
+    if state not in STATES:
+        raise ValueError(f'unknown state {state!r}')
     db.execute('UPDATE jobs SET state = ? WHERE id = ?', (state, job_id))
     db.commit()
 
@@ -94,8 +107,12 @@ def log_attempt(db, job_id):
     db.commit()
 
 
-def attempts_today(db):
-    return db.execute('SELECT COUNT(*) FROM score_attempts WHERE substr(at, 1, 10) = ?', (now()[:10],)).fetchone()[0]
+def attempts_today(db, source=None):
+    """Model calls made today, for every source or for one."""
+    if source is None:
+        return db.execute('SELECT COUNT(*) FROM score_attempts WHERE substr(at, 1, 10) = ?', (now()[:10],)).fetchone()[0]
+    return db.execute('SELECT COUNT(*) FROM score_attempts a JOIN jobs j ON j.id = a.job_id '
+                      'WHERE substr(a.at, 1, 10) = ? AND j.source = ?', (now()[:10], source)).fetchone()[0]
 
 
 def attempts_for(db, job_id):
