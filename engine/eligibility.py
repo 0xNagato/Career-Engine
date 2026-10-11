@@ -16,7 +16,7 @@ def words(terms):
 
 
 YES_RE, NO_RE, INCLUDE_RE, EXCLUDE_RE = words(YES), words(NO), words(INCLUDE), words(EXCLUDE)
-ONLY_RE = re.compile(r'(?<![a-z0-9])[a-z][a-z.]* only(?![a-z0-9])')
+ONLY_RE = re.compile(r'(?<![a-z0-9])(?!remote only)[a-z][a-z.]* only(?![a-z0-9])')  # "remote only" is not a place
 
 
 def check(job):
@@ -24,12 +24,13 @@ def check(job):
     if not job.get('remote'):
         return 'no', 'not remote'
     text = ' '.join(list(job.get('regions') or []) + [job.get('location') or '']).lower()
-    hit = YES_RE.search(text)
-    if hit:
-        return 'yes', f'open to {hit.group()}'
-    hit = NO_RE.search(text) or ONLY_RE.search(text)
-    if hit:
-        return 'no', f'restricted to {hit.group()}'
+    yes, no = YES_RE.search(text), NO_RE.search(text) or ONLY_RE.search(text)
+    if yes and no:  # "Anywhere in the US", "Americas, EMEA": let the model read the post
+        return 'unknown', f'mentions both {yes.group()} and {no.group()}'
+    if yes:
+        return 'yes', f'open to {yes.group()}'
+    if no:
+        return 'no', f'restricted to {no.group()}'
     return 'unknown', 'no region stated'
 
 

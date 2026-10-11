@@ -1,4 +1,9 @@
-"""Text cleaners. Everything from a job post passes through one of these before it is stored or sent."""
+"""Text cleaners. Everything from a job post passes through one of these before it is stored or sent.
+
+chat_safe: every short field a person may be shown (title, company, salary, tags, the model's reason).
+text_only: the long description and the location, which are read by code and by the tool-free model only;
+           the location is shown to a person only through chat_safe in digest.py.
+"""
 import html
 import re
 import unicodedata
@@ -31,7 +36,7 @@ def safe_link(link, prefixes):
 
 
 def short_list(value):
-    return [text_only(x, 40) for x in value[:8] if isinstance(x, str)] if isinstance(value, list) else []
+    return [chat_safe(x, 40) for x in value[:8] if isinstance(x, str)] if isinstance(value, list) else []
 
 
 def plain(text, limit=4000):

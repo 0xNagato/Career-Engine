@@ -58,7 +58,8 @@ def main(argv=None):
     for name, r in table.items():
         print(f'{name:<16}{r[0]:>8}{r[1]:>7}{r[2]:>5}{r[3]:>5}{r[4]:>5}  {r[5]}')
     totals = [sum(r[i] for r in table.values()) for i in range(5)]
-    scored = 0 if options.no_score else score.score_pending(db, score.load_profile(), options.limit)
+    limit = options.limit if options.limit is not None else (5 if options.dry_run else None)  # a dry run never scores many
+    scored = 0 if options.no_score else score.score_pending(db, score.load_profile(), limit)
     print(f"{'total':<16}{totals[0]:>8}{totals[1]:>7}{totals[2]:>5}{totals[3]:>5}{totals[4]:>5}  scored {scored}")
     if path:
         print(f'database: {path}')

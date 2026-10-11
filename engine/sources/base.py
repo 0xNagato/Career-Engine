@@ -5,7 +5,7 @@ import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from textsafe import clean, plain, safe_link, short_list, text_only
+from textsafe import chat_safe, clean, plain, safe_link, short_list, text_only
 
 USER_AGENT = 'career-engine (personal job reader; github.com/0xNagato)'
 
@@ -47,19 +47,20 @@ def iso_date(value):
 
 def make_job(source, prefixes, source_id, url, title, company='', location='', regions=(), remote=False,
              employment='', salary='', tags=(), description='', posted='', html_description=True):
-    """Build the job dict, every text field through text_only. None if the URL is off-site or the title is empty."""
+    """Build the job dict. Fields a person may be shown go through chat_safe; location, regions and description
+    go through text_only (see textsafe). None if the URL is off-site or the title is empty."""
     url = url if isinstance(url, str) else ''
     if not safe_link(url, prefixes):
         return None
-    title = text_only(title, 120)
+    title = chat_safe(title, 120)
     if not title:
         return None
     return {
         'source': source, 'source_id': clean(source_id, 200), 'url': url, 'title': title,
-        'company': text_only(company, 80) or 'Unknown', 'location': text_only(location, 120),
+        'company': chat_safe(company, 80) or 'Unknown', 'location': text_only(location, 120),
         'regions': [r for r in (text_only(x, 40).lower() for x in regions if isinstance(x, str)) if r][:8],
         'remote': bool(remote), 'employment': employment_of(employment),
-        'salary': text_only(salary, 80), 'tags': short_list(list(tags)),
+        'salary': chat_safe(salary, 80), 'tags': short_list(list(tags)),
         'description': plain(str(description or ''), 6000) if html_description else text_only(description or '', 6000),
         'posted': iso_date(posted),
     }

@@ -24,8 +24,9 @@ def compose(db, top=5):
     out = [f'Remote jobs, {today.day} {today:%b} ({len(rows)} of {store.count_unshown(db)} new)']
     for r in rows:
         place = chat_safe(r['location'] or ' '.join(json.loads(r['regions'])), 60) or 'location not stated'
-        out += ['', f"#{r['id']}  {r['score']}  {chat_safe(r['title'], 100)}",
-                f"{chat_safe(r['company'], 60)}, {place}, {r['employment'].replace('_', ' ')}, via {r['source'].replace('_', ' ').capitalize()}",
+        out += ['', f"#{r['id']}  score {r['score']}",  # numbers on a line of their own, away from post text
+                f"Title: {chat_safe(r['title'], 100)}", f"Company: {chat_safe(r['company'], 60)}",
+                f"Where: {place}, {r['employment'].replace('_', ' ')}, via {r['source'].replace('_', ' ').capitalize()}",
                 f"Why: {chat_safe(r['reason'], 200)}", r['url']]
     first = rows[0]['id']
     out += ['', f'Reply: apply {first}, skip {first} too junior, more {first}']

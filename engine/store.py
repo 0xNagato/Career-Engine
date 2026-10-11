@@ -4,19 +4,20 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import common
-from textsafe import clean, short_list, text_only
+from textsafe import chat_safe, clean, short_list
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY, source TEXT, source_id TEXT, url TEXT UNIQUE, title TEXT, company TEXT, location TEXT,
   regions TEXT, remote INTEGER, employment TEXT, salary TEXT, tags TEXT, description TEXT, posted TEXT,
-  key TEXT, first_seen TEXT, state TEXT CHECK (state IN ('new','ineligible','unscored','scored','shown')));
+  key TEXT, first_seen TEXT, state TEXT CHECK (state IN ('new','ineligible','unscored','scored','shown','failed')));
 CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key);
 CREATE TABLE IF NOT EXISTS verdicts (
   job_id INTEGER, eligible INTEGER, score INTEGER, reason TEXT, variant TEXT, requirements TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS decisions (
   job_id INTEGER, action TEXT CHECK (action IN ('apply','skip','more')), reason TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS source_runs (source TEXT, at TEXT, fetched INTEGER, added INTEGER, error TEXT);
+CREATE TABLE IF NOT EXISTS score_attempts (job_id INTEGER, at TEXT);
 """
 
 
@@ -82,9 +83,23 @@ def log_run(db, source, fetched, added, error=''):
 
 def save_verdict(db, job_id, verdict):
     db.execute('INSERT INTO verdicts VALUES (?,?,?,?,?,?,?)',
-               (job_id, int(verdict['eligible']), verdict['score'], text_only(verdict.get('reason', ''), 200),
+               (job_id, int(verdict['eligible']), verdict['score'], chat_safe(verdict.get('reason', ''), 200),
                 verdict['variant'], json.dumps(short_list(verdict.get('key_requirements'))), now()))
     set_state(db, job_id, 'scored')
+
+
+def log_attempt(db, job_id):
+    """Recorded before the model is called, so a failed or crashed call still counts against the daily cap."""
+    db.execute('INSERT INTO score_attempts VALUES (?,?)', (job_id, now()))
+    db.commit()
+
+
+def attempts_today(db):
+    return db.execute('SELECT COUNT(*) FROM score_attempts WHERE substr(at, 1, 10) = ?', (now()[:10],)).fetchone()[0]
+
+
+def attempts_for(db, job_id):
+    return db.execute('SELECT COUNT(*) FROM score_attempts WHERE job_id = ?', (job_id,)).fetchone()[0]
 
 
 def scored_today(db):
