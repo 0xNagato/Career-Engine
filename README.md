@@ -1,17 +1,17 @@
 # Career Engine
 
-Two small scripts that watch a job board and my inbox for me, and message me on WhatsApp when something needs attention. They use an [OpenClaw](https://github.com/openclaw/openclaw) agent to judge each job post against my profile.
+Two small scripts that watch a job board and my inbox for me, and message me on WhatsApp when something needs attention. They use a model, called through [OpenClaw](https://github.com/openclaw/openclaw), to judge each job post against my profile.
 
 ## What it does
 
-**`larajobs_hunter.py`** reads the [LaraJobs](https://larajobs.com) feed. For each post it has not handled before, it asks an agent to score the fit from 0 to 100 and say whether I am eligible. Posts that score 80 or more are saved as leads and sent to me on WhatsApp.
+**`larajobs_hunter.py`** reads the [LaraJobs](https://larajobs.com) feed. For each post it has not handled before, it asks a model to score the fit from 0 to 100 and say whether I am eligible. Posts that score 80 or more are saved as leads and sent to me on WhatsApp.
 
 **`check_job_response.py`** searches my mailbox for email from any company I have a lead or an application with. New ones are logged and sent to me in one message.
 
 Everything is kept in one file, `data/career_ledger.json`, with three lists: `leads`, `applications` and `responses`.
 
 ```
-LaraJobs feed ──> agent scores the post ──> ledger ──> WhatsApp
+LaraJobs feed ──> model scores the post ──> ledger ──> WhatsApp
 mailbox ────────> match on company name ──> ledger ──> WhatsApp
 ```
 
@@ -48,15 +48,17 @@ To run them on a schedule, add lines like these with `crontab -e`:
 python3 automation/check.py
 ```
 
-This runs both scripts against made-up data, with no network, agent or mailbox. It checks that a match is recorded and announced once, that a failed evaluation is retried on the next run, that every new email is logged, and that a damaged ledger stops the run instead of being overwritten.
+This runs both scripts against made-up data, with no network, model or mailbox. It checks that a match is recorded and announced once, that a failed evaluation is retried on the next run, that every new email is logged, and that a damaged ledger stops the run instead of being overwritten. It also checks the defences: a feed carrying a DTD is refused in any encoding, a model reply that is not exactly one valid verdict is rejected, off-site links are dropped, and hostile text cannot reach the mail search.
 
 ## Limits
 
-- **One job board.** Only LaraJobs is read.
-- **Job posts are untrusted text.** The prompt tells the agent to treat the post as data and not to act on it, and evaluations run in their own session. That lowers the risk of a post steering the agent, but it does not remove it. Point `OPENCLAW_AGENT` at an agent with no tools if you want a hard guarantee.
+- **One job board, and a thin one.** Only LaraJobs is read, and its feed carries no job description. Each post is scored on its title, company, location, salary and tags.
+- **The model knows only your profile file.** It has no other context about you, so location and work-authorisation limits must be written in `profile.md`.
+- **Job posts are untrusted text.** A post is scored by a single model call (`openclaw infer model run`) that has no tools and no session, so a post that tries to give instructions can at worst earn a wrong score. The company name is taken from the feed, not from the model, and every piece of text is flattened to one capped line before it is stored or sent.
+- **The ledger still holds text written by strangers.** Titles, company names and reasons come from job posts. Any agent that reads the ledger should treat them as data, not as instructions.
 - **Email matching is by company name** in the sender or subject, so a newsletter that mentions the company also counts.
 - **Nothing here applies for jobs.** The WhatsApp message offers to draft a cover letter; that step is done by the agent you reply to, not by this code.
-- **A post the agent cannot score is retried on every run** until it succeeds or leaves the feed.
+- **A post the model cannot score is retried on every run** until it succeeds or leaves the feed.
 
 ## Files
 

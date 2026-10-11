@@ -5,6 +5,7 @@ Needs himalaya 2.x with a configured mail account.
 """
 import argparse
 import json
+import re
 import subprocess
 from datetime import datetime
 
@@ -14,7 +15,9 @@ TOO_GENERIC = {'unknown', 'confidential', 'n/a', 'none'}
 
 
 def company_names(ledger):
-    names = {entry.get('company', '').strip().lower() for entry in ledger['applications'] + ledger['leads']}
+    """Company names from the ledger, cut down to characters that are safe inside a quoted search pattern."""
+    names = {re.sub(r'[^\w &.\-]', ' ', entry.get('company', '').lower()) for entry in ledger['applications'] + ledger['leads']}
+    names = {re.sub(r'\s+', ' ', name).strip() for name in names}
     return sorted(n for n in names - TOO_GENERIC if len(n) >= 3)
 
 
