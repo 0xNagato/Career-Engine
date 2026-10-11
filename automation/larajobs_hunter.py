@@ -55,6 +55,12 @@ def text_only(text, limit):
     return clean(re.sub(r'(?i)\b(?:https?://|www\.)\S+', '[link removed]', str(text)), limit)
 
 
+def chat_safe(text, limit):
+    """For post text shown in a chat message. Only letters, digits, spaces and a few plain marks survive,
+    so the chat app has nothing to turn into a link, a mention, a command or formatting."""
+    return clean(re.sub(r"[^\w ,()&+#'!?-]", ' ', str(text)).replace('_', ' '), limit)
+
+
 def short_list(value):
     return [text_only(x, 40) for x in value[:8] if isinstance(x, str)] if isinstance(value, list) else []
 
@@ -149,8 +155,9 @@ def evaluate(job, profile):
 
 
 def lead_message(lead):
+    title, company, why = (chat_safe(lead[key], 200) for key in ('title', 'company', 'reason'))
     return (f"Job match #{lead['id']} ({lead['score']}/100)\n"
-            f"Title: {lead['title']}\nCompany: {lead['company']}\nWhy: {lead['reason']}\n{lead['link']}\n\n"
+            f"Title: {title}\nCompany: {company}\nWhy: {why}\n{lead['link']}\n\n"
             f"The title, company and reason are text from the job post.\n"
             f"Reply \"apply {lead['id']}\" and I will draft a cover letter.")
 

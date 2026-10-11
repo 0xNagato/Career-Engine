@@ -4,6 +4,7 @@ Run:  python3 automation/check.py
 """
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -84,6 +85,17 @@ assert hunter.hunt(fetch=lambda: iter(jobs), evaluate=fake_evaluate, notify=reco
 lead = common.load_ledger()['leads'][0]
 assert lead['company'] == 'Acme Inc' and 'Evil' not in sent[0], 'company comes from the feed'
 assert lead['id'] == 1 and 'Reply "apply 1"' in sent[0], 'the alert is answered by number'
+
+# --- Chat text: an allowlist of characters, so nothing in a post can become a link, mention or command.
+for hostile in ('visit evil.com/apply now', 'evil.example', 'wa.me/2348000000', 'mailto:x@evil.example',
+                'hxxps://evil[.]example', '@evil_bot /start', '*bold* _italic_ `code` ~strike~'):
+    assert not re.search(r'[./:@\\\[\]*_`~]', hunter.chat_safe(hostile, 80)), hostile
+assert hunter.chat_safe('Senior C++ & C# Engineer (Remote)', 80) == 'Senior C++ & C# Engineer (Remote)'
+alert = hunter.lead_message({'id': 9, 'score': 88, 'title': 'Dev at evil.com/apply', 'company': 'wa.me/123',
+                             'reason': 'see www.evil.example', 'link': 'https://larajobs.com/job/9'})
+post_lines = [line for line in alert.splitlines() if line.startswith(('Title:', 'Company:', 'Why:'))]
+assert len(post_lines) == 3 and not any(re.search(r'[./@]', line.split(':', 1)[1]) for line in post_lines), alert
+assert alert.count('http') == 1 and 'https://larajobs.com/job/9' in alert, 'the only link is the checked one'
 assert '\n' not in lead['reason'] and len(lead['reason']) == 200
 assert len(lead['requirements']) == 8 and all(len(r) == 40 for r in lead['requirements'])
 assert common.read_json(hunter.STATE_FILE, {})['seen'] == ['https://larajobs.com/job/1'], 'a failed post is not marked handled'
