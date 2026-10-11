@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import common
 from textsafe import chat_safe, clean, short_list
 
-VERSION = 2  # raise this whenever SCHEMA changes
+VERSION = 3  # raise this whenever SCHEMA changes
 STATES = ('new', 'ineligible', 'unscored', 'scored', 'shown', 'failed')
 
 SCHEMA = """
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
 CREATE TABLE IF NOT EXISTS decisions (
   job_id INTEGER, action TEXT CHECK (action IN ('apply','skip','more')), reason TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS source_runs (source TEXT, at TEXT, fetched INTEGER, added INTEGER, error TEXT);
-CREATE TABLE IF NOT EXISTS score_attempts (job_id INTEGER, at TEXT);
+CREATE TABLE IF NOT EXISTS score_attempts (job_id INTEGER, at TEXT, outcome TEXT);
 """
 
 
@@ -101,9 +101,16 @@ def save_verdict(db, job_id, verdict):
     set_state(db, job_id, 'scored')
 
 
-def log_attempt(db, job_id):
-    """Recorded before the model is called, so a failed or crashed call still counts against the daily cap."""
-    db.execute('INSERT INTO score_attempts VALUES (?,?)', (job_id, now()))
+def log_attempt(db, job_id, outcome='pending'):
+    """Recorded before the model is called, so a failed or crashed call still counts against the daily cap.
+    Outcomes: pending, ok, bad (no verdict, the post's fault), pipe (the model path's fault), control."""
+    cur = db.execute('INSERT INTO score_attempts VALUES (?,?,?)', (job_id, now(), outcome))
+    db.commit()
+    return cur.lastrowid
+
+
+def set_outcome(db, attempt, outcome):
+    db.execute('UPDATE score_attempts SET outcome = ? WHERE rowid = ?', (outcome, attempt))
     db.commit()
 
 
@@ -115,8 +122,11 @@ def attempts_today(db, source=None):
                       'WHERE substr(a.at, 1, 10) = ? AND j.source = ?', (now()[:10], source)).fetchone()[0]
 
 
-def attempts_for(db, job_id):
-    return db.execute('SELECT COUNT(*) FROM score_attempts WHERE job_id = ?', (job_id,)).fetchone()[0]
+def attempts_for(db, job_id, outcome=None):
+    """Scoring calls made for one job, control calls left out; optionally only those with one outcome."""
+    if outcome:
+        return db.execute('SELECT COUNT(*) FROM score_attempts WHERE job_id = ? AND outcome = ?', (job_id, outcome)).fetchone()[0]
+    return db.execute("SELECT COUNT(*) FROM score_attempts WHERE job_id = ? AND outcome != 'control'", (job_id,)).fetchone()[0]
 
 
 def scored_today(db):
