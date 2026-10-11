@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -57,8 +58,17 @@ def text_only(text, limit):
 
 def chat_safe(text, limit):
     """For post text shown in a chat message. Only letters, digits, spaces and a few plain marks survive,
-    so the chat app has nothing to turn into a link, a mention, a command or formatting."""
-    return clean(re.sub(r"[^\w ,()&+#'!?-]", ' ', str(text)).replace('_', ' '), limit)
+    so the chat app has nothing to turn into a link, a mention, a command or formatting.
+    Look-alike characters are folded to their plain form first, so a disguised dot or slash goes too."""
+    folded = unicodedata.normalize('NFKC', str(text))
+    return clean(''.join(ch if ch.isalpha() or ch.isdecimal() or ch in " ,()&+#'!?-" else ' ' for ch in folded), limit)
+
+
+def safe_link(link):
+    """True for a link on the job board made only of plain URL characters. No spaces, no '@', no backslash,
+    nothing outside ASCII: nothing a chat app could read as a second link or a different host."""
+    return (link.startswith(SITE) and len(link) <= 300
+            and re.fullmatch(r'[A-Za-z0-9\-._~/%?=&#+:,]*', link[len(SITE):]) is not None)
 
 
 def short_list(value):
@@ -96,7 +106,7 @@ def parse_feed(raw):
     for item in xml_root(raw).iterfind('.//item'):
         field = {tag: (item.findtext(tag) or '').strip() for tag in ('guid', 'title', 'link', 'description')}
         link = field['link']
-        if not field['guid'] or not link.startswith(SITE) or link != clean(link, 300):
+        if not field['guid'] or not safe_link(link):
             continue  # only links on the job board itself are stored or sent
         yield {
             'guid': clean(field['guid'], 200), 'link': link,
